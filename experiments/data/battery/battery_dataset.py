@@ -1,17 +1,27 @@
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+from dataclasses import dataclass
+
+@dataclass
+class BatteryDatasetConfig:
+    file_path: str
+    seq_len: int
+    pred_len: int
+    target_column: str
 
 class BatteryDataset(Dataset):
-    def __init__(self, file_path, seq_len, pred_len, target_column):
-        self.data = pd.read_csv(file_path)
-        self.seq_len = seq_len
-        self.pred_len = pred_len
-        self.target_column = target_column
+    config_class = BatteryDatasetConfig  # Add this line
+
+    def __init__(self, config: BatteryDatasetConfig):
+        self.data = pd.read_csv(config.file_path)
+        self.seq_len = config.seq_len
+        self.pred_len = config.pred_len
+        self.target_column = config.target_column
 
         # Extract features (Current, Temp, SOC) and target (Voltage)
         self.features = self.data[['Current', 'Temp', 'SOC']].values  # Removed Voltage
-        self.target = self.data[target_column].values  # Assuming you want to predict 'Voltage'
+        self.target = self.data[self.target_column].values  # Assuming you want to predict 'Voltage'
 
         self.X, self.y = self.create_sequences(self.features, self.target)
 
