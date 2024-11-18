@@ -1,25 +1,20 @@
-# Copyright (c) NXAI GmbH and its affiliates 2024
-# Korbinian Poeppel, Maximilian Beck
-from argparse import ArgumentParser
-from typing import Type
-
 import torch
 import torch.optim as optim
 from dacite import from_dict
-from experiments.data.formal_language.formal_language_dataset import (
-    FormLangDatasetGenerator,
-)
+from experiments.data.battery.battery_dataset import BatteryDataset
 from experiments.data.utils import DataGen
 from experiments.lr_scheduler import LinearWarmupCosineAnnealing
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from argparse import ArgumentParser
+from typing import Type
 
 from xlstm.xlstm_lm_model import xLSTMLMModel, xLSTMLMModelConfig
 
 dataset_registry: dict[str, Type[DataGen]] = {
-    "form_language": FormLangDatasetGenerator
+    "battery_dataset": BatteryDataset,
 }
 
 torch_dtype_map: dict[str, torch.dtype] = {
@@ -28,26 +23,35 @@ torch_dtype_map: dict[str, torch.dtype] = {
     "float16": torch.float16,
 }
 
-
 def load_dataset(name, kwargs):
     cls = dataset_registry[name]
     return cls(from_dict(cls.config_class, OmegaConf.to_container(kwargs)))
-
 
 def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
 
     torch.manual_seed(cfg.training.seed)
 
+    # Load training and validation datasets
     dataset = load_dataset(cfg.dataset.name, cfg.dataset.kwargs)
 
-    train_loader = DataLoader(dataset.train_split, batch_size=cfg.training.batch_size)
+    train_loader = DataLoader(dataset.train_split, batch_size=cfg.training.batch_size, shuffle=True)
     val_loaders = {
         key: DataLoader(val_ds, batch_size=cfg.training.batch_size) for key, val_ds in dataset.validation_split.items()
     }
     train_metrics = dataset.train_metrics.to(device=cfg.training.device)
     val_metrics = dataset.validation_metrics.to(device=cfg.training.device)
 
+    # Load test dataset
+    test_dataset = BatteryDataset(
+        file_path='./data/test_scaled_tesla.csv',  # Assuming this is the test dataset file path
+        seq_len=cfg.dataset.kwargs['seq_len'],
+        pred_len=cfg.dataset.kwargs['pred_len'],
+        target_column=cfg.dataset.kwargs['target_column']
+    )
+    test_loader = DataLoader(test_dataset, batch_size=cfg.training.batch_size, shuffle=False)
+
+    # Initialize the model
     model = xLSTMLMModel(from_dict(xLSTMLMModelConfig, OmegaConf.to_container(cfg.model))).to(
         device=cfg.training.device
     )
@@ -55,8 +59,8 @@ def main(cfg: DictConfig):
 
     model = model.to(dtype=torch_dtype_map[cfg.training.weight_precision])
 
+    # Optimizer and LR scheduler
     optim_groups = model._create_weight_decay_optim_groups()
-
     optimizer = optim.AdamW(
         (
             {"weight_decay": cfg.training.weight_decay, "params": optim_groups[0]},
@@ -90,16 +94,12 @@ def main(cfg: DictConfig):
                 dtype=torch_dtype_map[cfg.training.amp_precision],
                 enabled=cfg.training.enable_mixed_precision,
             ):
-
-                outputs = model(inputs.to(device=cfg.training.device))
-                loss = nn.functional.cross_entropy(
-                    outputs.view(-1, cfg.model.vocab_size),
-                    labels.view(-1),
-                    ignore_index=-1,
-                )
+                outputs = model(inputs)
+                loss = nn.functional.mse_loss(outputs, labels)  # Use MSE loss since it's a regression task
                 loss.backward()
                 optimizer.step()
                 lr_scheduler.step()
+
                 running_loss = running_loss * step / (step + 1) + loss.item() * 1 / (step + 1)
             step += 1
             train_metrics.update(outputs, labels)
@@ -124,11 +124,7 @@ def main(cfg: DictConfig):
                                 enabled=cfg.training.enable_mixed_precision,
                             ):
                                 val_outputs = model(val_inputs)
-                                loss = nn.functional.cross_entropy(
-                                    val_outputs.view(-1, cfg.model.vocab_size),
-                                    val_labels.view(-1),
-                                    ignore_index=-1,
-                                )
+                                loss = nn.functional.mse_loss(val_outputs, val_labels)
                                 val_loss += loss.item()
                                 val_metrics.update(val_outputs, val_labels)
                         print(
@@ -140,11 +136,28 @@ def main(cfg: DictConfig):
                 break
         epoch += 1
 
+    # Testing loop (After Training Completion)
+    print("\nStarting testing...")
+    model.eval()
+    test_loss = 0.0
+    with torch.no_grad():
+        for test_inputs, test_labels in test_loader:
+            test_inputs = test_inputs.to(device=cfg.training.device)
+            test_labels = test_labels.to(device=cfg.training.device)
+            with torch.autocast(
+                device_type=cfg.training.device,
+                dtype=torch_dtype_map[cfg.training.amp_precision],
+                enabled=cfg.training.enable_mixed_precision,
+            ):
+                test_outputs = model(test_inputs)
+                loss = nn.functional.mse_loss(test_outputs, test_labels)
+                test_loss += loss.item()
+
+    print(f"Test Loss: {test_loss / len(test_loader):.4f}")
 
 if __name__ == "__main__":
-
     parser = ArgumentParser()
-    parser.add_argument("--config", default="parity_xlstm11")
+    parser.add_argument("--config", default="battery_xlstm.yml")  # Updated the default config to the battery dataset config
 
     args = parser.parse_args()
 
