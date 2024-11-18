@@ -32,11 +32,15 @@ torch_dtype_map: dict[str, torch.dtype] = {
 
 
 def load_dataset(name, kwargs):
+    print(f"Loading dataset: {name}")
     cls = dataset_registry[name]
-    return cls(from_dict(cls.config_class, OmegaConf.to_container(kwargs)))
+    dataset = cls(from_dict(cls.config_class, OmegaConf.to_container(kwargs)))
+    print(f"Dataset {name} loaded successfully.")
+    return dataset
 
 
 def main(cfg: DictConfig):
+    print("Configuration loaded successfully.")
     print(OmegaConf.to_yaml(cfg))
 
     torch.manual_seed(cfg.training.seed)
@@ -44,30 +48,37 @@ def main(cfg: DictConfig):
     # Load training dataset
     train_dataset = load_dataset(cfg.dataset.name, cfg.dataset.kwargs)
     train_loader = DataLoader(train_dataset.train_split, batch_size=cfg.training.batch_size)
+    print("Training dataset loaded and DataLoader created.")
 
     # Load validation datasets (if available)
     val_loaders = {
         key: DataLoader(val_ds, batch_size=cfg.training.batch_size) for key, val_ds in train_dataset.validation_split.items()
     }
+    print("Validation DataLoaders created.")
 
     # Load testing dataset for inference
     test_dataset = load_dataset(cfg.test_dataset.name, cfg.test_dataset.kwargs)
     test_loader = DataLoader(test_dataset, batch_size=cfg.training.batch_size, shuffle=False)
+    print("Testing dataset loaded and DataLoader created.")
 
     # Set up training and validation metrics
     train_metrics = train_dataset.train_metrics.to(device=cfg.training.device)
     val_metrics = train_dataset.validation_metrics.to(device=cfg.training.device)
 
     # Set up model
+    print("Initializing model...")
     model = xLSTMLMModel(from_dict(xLSTMLMModelConfig, OmegaConf.to_container(cfg.model))).to(
         device=cfg.training.device
     )
     model.reset_parameters()
+    print("Model initialized successfully.")
 
     model = model.to(dtype=torch_dtype_map[cfg.training.weight_precision])
 
     optim_groups = model._create_weight_decay_optim_groups()
 
+    # Optimizer and learning rate scheduler setup
+    print("Setting up optimizer and learning rate scheduler...")
     optimizer = optim.AdamW(
         (
             {"weight_decay": cfg.training.weight_decay, "params": optim_groups[0]},
@@ -82,8 +93,10 @@ def main(cfg: DictConfig):
         cfg.training.lr,
         cfg.training.lr_decay_factor * cfg.training.lr,
     )
+    print("Optimizer and learning rate scheduler set up successfully.")
 
     # Training loop
+    print("Starting training...")
     step = 0
     epoch = 1
     running_loss = 0.0
@@ -101,15 +114,16 @@ def main(cfg: DictConfig):
                 dtype=torch_dtype_map[cfg.training.amp_precision],
                 enabled=cfg.training.enable_mixed_precision,
             ):
-
                 outputs = model(inputs.to(device=cfg.training.device))
                 loss = nn.functional.mse_loss(outputs, labels)
                 loss.backward()
                 optimizer.step()
                 lr_scheduler.step()
                 running_loss = running_loss * step / (step + 1) + loss.item() * 1 / (step + 1)
+
             step += 1
             train_metrics.update(outputs, labels)
+            print(f"Step {step}: Loss = {loss.item():.4f}")
 
             if step % cfg.training.val_every_step == 0:
                 print(
@@ -142,6 +156,7 @@ def main(cfg: DictConfig):
             if step >= cfg.training.num_steps:
                 break
         epoch += 1
+    print("Training completed.")
 
     # Testing after training is complete
     print("\nStarting Test Inference:")
@@ -160,7 +175,8 @@ def main(cfg: DictConfig):
 
     # Combine all predictions
     test_predictions = torch.cat(test_predictions, dim=0)
-    print("Test Inference Completed")
+    print("Test Inference Completed.")
+    print(f"Number of test predictions: {test_predictions.shape[0]}")
 
 
 if __name__ == "__main__":
@@ -174,4 +190,5 @@ if __name__ == "__main__":
         config_yaml = fp.read()
     cfg = OmegaConf.create(config_yaml)
     OmegaConf.resolve(cfg)
+    print("Starting the main script...")
     main(cfg)
