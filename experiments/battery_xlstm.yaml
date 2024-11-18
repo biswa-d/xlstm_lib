@@ -2,14 +2,14 @@ dataset:
   train:
     name: battery_dataset
     kwargs:
-      file_path: './data/train_scaled_tesla.csv'
+      file_path: './data/train_scaled_tesla.csv'  # Path to your training CSV
       seq_len: 400
       pred_len: 1
       target_column: 'Voltage'
   test:
     name: battery_dataset
     kwargs:
-      file_path: './data/test_scaled_tesla.csv'
+      file_path: './data/test_scaled_tesla.csv'  # Path to your testing CSV
       seq_len: 400
       pred_len: 1
       target_column: 'Voltage'
@@ -41,10 +41,10 @@ training:
   val_every_step: 5
   lr: 0.0001
   weight_decay: 0.01
-  enable_mixed_precision: true
-  device: cuda
-  weight_precision: float32
-  amp_precision: bfloat16
+  enable_mixed_precision: True
+  device: 'cuda'
+  weight_precision: 'float32'
+  amp_precision: 'bfloat16'
   lr_warmup_steps: 1000
   lr_decay_until_steps: 4000
   lr_decay_factor: 0.1
