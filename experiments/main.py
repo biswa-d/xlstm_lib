@@ -28,6 +28,7 @@ def load_dataset(name, kwargs):
     return cls(from_dict(cls.config_class, OmegaConf.to_container(kwargs)))
 
 def main(cfg: DictConfig):
+    print("Starting experiment with config:")
     print(OmegaConf.to_yaml(cfg))
 
     torch.manual_seed(cfg.training.seed)
