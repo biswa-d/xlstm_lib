@@ -56,14 +56,13 @@ model:
 training:
   seed: 42
   batch_size: 100
-  num_steps: 10000
-  val_every_step: 5
+  max_epochs: 2                # NEW: Max epochs to train for
+  early_stopping_patience: 20
+  lr_scheduler_patience: 4    # NEW: Stop if val_loss doesn't improve for 10 epochs
   lr: 0.0001
   weight_decay: 0.01
   enable_mixed_precision: true
   device: "cuda:0"
   weight_precision: float32
   amp_precision: bfloat16
-  lr_warmup_steps: 1000
-  lr_decay_until_steps: 4000
-  lr_decay_factor: 0.1
+  lr_decay_factor: 0.1           # Can be kept or removed, ReduceLROnPlateau uses 'factor'
