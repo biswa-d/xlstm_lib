@@ -16,7 +16,7 @@ class BatteryDatasetConfig:
     seq_len: int
     pred_len: int
     target_column: str
-    feature_columns: Tuple[str, ...] = ('Current', 'Temp', 'SOC')
+    feature_columns: list[str] = ('Current', 'Temp', 'SOC')
     val_split_percent: float = 0.15
 
 # BatteryDataset class definition
