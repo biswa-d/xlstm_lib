@@ -345,8 +345,9 @@ def main(cfg: DictConfig):
     results_filename = f"predictions_xlstm_{run_timestamp}.csv"
     results_path = os.path.join(run_dir, results_filename)
     
-    pred_np = test_predictions.numpy()
-    target_np = true_targets.numpy()
+    # --- Convert tensors to float32 before converting to numpy ---
+    pred_np = test_predictions.float().numpy()
+    target_np = true_targets.float().numpy()
     save_raw = False 
 
     if pred_np.shape[1] == 1 and pred_np.shape[2] == 1:
