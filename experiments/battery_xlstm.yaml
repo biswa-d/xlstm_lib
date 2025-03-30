@@ -51,7 +51,7 @@ model:
   # Other optional xLSTMBlockStackConfig parameters (defaults shown):
   # add_post_blocks_norm: True
   # bias: False
-  # dropout: 0.0
+  dropout: 0.2
 
 training:
   seed: 2000
