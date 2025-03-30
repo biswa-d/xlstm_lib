@@ -58,6 +58,7 @@ training:
   batch_size: 100
   max_epochs: 100                # Max epochs to train for
   early_stopping_patience: 20    # Stop if val_loss doesn't improve for this many epochs
+  num_workers: 4  # Set number of CPU workers for data loading
 
   # --- Option 1: StepLR ---
   # Uncomment this block to use StepLR

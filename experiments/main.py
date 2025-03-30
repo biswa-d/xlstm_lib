@@ -72,12 +72,23 @@ def main(cfg: DictConfig):
     # Load training dataset using the generator
     train_dataset_gen = load_dataset(cfg.dataset.name, cfg.dataset.kwargs)
     # Use shuffle=True for training loader
-    train_loader = DataLoader(train_dataset_gen.train_split, batch_size=cfg.training.batch_size, shuffle=True)
+    num_workers = cfg.training.get("num_workers", 4)
+    print(f"Using {num_workers} workers for DataLoader.")
+    train_loader = DataLoader(
+        train_dataset_gen.train_split, 
+        batch_size=cfg.training.batch_size, 
+        shuffle=True, 
+        num_workers=num_workers
+    )
     print("Training DataLoader created.")
 
     # Load validation datasets using the generator
     val_loaders = {
-        key: DataLoader(val_ds, batch_size=cfg.training.batch_size) 
+        key: DataLoader(
+            val_ds, 
+            batch_size=cfg.training.batch_size, 
+            num_workers=num_workers
+        ) 
         for key, val_ds in train_dataset_gen.validation_split.items()
     }
     val_loader = val_loaders.get("val") # Get the primary validation loader
@@ -98,7 +109,12 @@ def main(cfg: DictConfig):
     )
     print("Testing dataset loaded.")
 
-    test_loader = DataLoader(test_dataset, batch_size=cfg.training.batch_size, shuffle=False)
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=cfg.training.batch_size, 
+        shuffle=False, 
+        num_workers=num_workers
+    )
     print("Testing DataLoader created.")
     # ---
 
@@ -109,6 +125,9 @@ def main(cfg: DictConfig):
     device = cfg.training.device
     max_epochs = cfg.training.max_epochs
     patience = cfg.training.early_stopping_patience
+    # Get num_workers from config, default to 4
+    num_workers = cfg.training.get("num_workers", 4) 
+    print(f"Using {num_workers} workers for DataLoader.")
     # ---
 
     # Set up training and validation metrics (obtained from the generator)
