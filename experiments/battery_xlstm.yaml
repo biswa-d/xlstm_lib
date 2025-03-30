@@ -56,20 +56,20 @@ model:
 training:
   seed: 2000
   batch_size: 100
-  max_epochs: 1                # Max epochs to train for
+  max_epochs: 100                # Max epochs to train for
   early_stopping_patience: 20    # Stop if val_loss doesn't improve for this many epochs
 
   # --- Option 1: StepLR ---
   # Uncomment this block to use StepLR
-  # lr_scheduler_type: StepLR
-  # lr_step_size: 15                 # Reduce LR every this many epochs
-  # lr_gamma: 0.1                    # Multiply LR by this factor when reducing
+  lr_scheduler_type: StepLR
+  lr_step_size: 15                 # Reduce LR every this many epochs
+  lr_gamma: 0.4                    # Multiply LR by this factor when reducing
 
   # --- Option 2: ReduceLROnPlateau (Default if Option 1 is commented) ---
   # Uncomment this block (and comment Option 1) to use ReduceLROnPlateau
-  lr_scheduler_type: ReduceLROnPlateau
-  lr_scheduler_patience: 3       # Reduce LR if val_loss doesn't improve for this many epochs
-  lr_factor: 0.1                 # Multiply LR by this factor when reducing (ReduceLROnPlateau)
+  # lr_scheduler_type: ReduceLROnPlateau
+  # lr_scheduler_patience: 3       # Reduce LR if val_loss doesn't improve for this many epochs
+  # lr_factor: 0.1                 # Multiply LR by this factor when reducing (ReduceLROnPlateau)
 
   # --- Common Training Parameters ---
   lr: 0.0005                     # Initial learning rate

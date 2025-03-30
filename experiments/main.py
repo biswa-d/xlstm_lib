@@ -130,6 +130,10 @@ def main(cfg: DictConfig):
 
     model = xLSTMRegressionModel(model_config).to(device=device)
     print("Regression Model initialized successfully.")
+
+    # --- Calculate and Print Model Parameters --- 
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total Trainable Parameters: {total_params:,} (~{total_params / 1_000_000:.2f}M)")
     # ---
 
     model = model.to(dtype=torch_dtype_map[cfg.training.weight_precision])
