@@ -164,6 +164,11 @@ def main(cfg: DictConfig):
     )
     print("Optimizer and learning rate scheduler set up successfully.")
 
+    # --- Determine base device type for autocast --- 
+    autocast_device_type = 'cuda' if 'cuda' in cfg.training.device else 'cpu'
+    print(f"Using device: {cfg.training.device}, Autocast device type: {autocast_device_type}")
+    # ---
+
     # Training loop
     print("Starting training...")
     step = 0
@@ -184,7 +189,7 @@ def main(cfg: DictConfig):
             model.train()
             optimizer.zero_grad()
             with torch.autocast(
-                device_type=cfg.training.device,
+                device_type=autocast_device_type,
                 dtype=torch_dtype_map[cfg.training.amp_precision],
                 enabled=cfg.training.enable_mixed_precision,
             ):
@@ -244,7 +249,7 @@ def main(cfg: DictConfig):
                             val_inputs = val_inputs.to(device=cfg.training.device)
                             val_labels = val_labels.to(device=cfg.training.device)
                             with torch.autocast(
-                                device_type=cfg.training.device,
+                                device_type=autocast_device_type,
                                 dtype=torch_dtype_map[cfg.training.amp_precision],
                                 enabled=cfg.training.enable_mixed_precision,
                             ):
@@ -326,7 +331,7 @@ def main(cfg: DictConfig):
             test_inputs = test_inputs.to(device=cfg.training.device)
 
             with torch.autocast(
-                device_type=cfg.training.device,
+                device_type=autocast_device_type,
                 dtype=torch_dtype_map[cfg.training.amp_precision],
                 enabled=cfg.training.enable_mixed_precision,
             ):
