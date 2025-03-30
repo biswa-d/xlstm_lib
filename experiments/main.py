@@ -11,6 +11,7 @@ import torch.optim as optim
 # --- Updated LR Scheduler Import --- 
 from torch.optim.lr_scheduler import ReduceLROnPlateau 
 # from experiments.lr_scheduler import LinearWarmupCosineAnnealing # Removed step-based scheduler
+from torch.optim.lr_scheduler import StepLR # Added StepLR
 # ---
 from dacite import from_dict
 from experiments.data.formal_language.formal_language_dataset import (
@@ -154,20 +155,32 @@ def main(cfg: DictConfig):
     # ---
 
     # --- Learning Rate Scheduler --- 
-    # Use ReduceLROnPlateau, monitors validation loss
-    # Get LR scheduler patience from config, default to 3 if not specified
-    lr_scheduler_patience = cfg.training.get("lr_scheduler_patience", 3) 
-    print(f"Setting ReduceLROnPlateau patience to: {lr_scheduler_patience}")
+    lr_scheduler_type = cfg.training.get("lr_scheduler_type", "ReduceLROnPlateau").lower()
+    print(f"Initializing LR scheduler: {lr_scheduler_type}")
 
-    lr_scheduler = ReduceLROnPlateau(
-        optimizer, 
-        mode='min',            # Reduce LR when val_loss stops decreasing
-        factor=0.1,          # Factor by which the learning rate will be reduced. new_lr = lr * factor
-        # patience=3, # OLD: Fixed value
-        patience=lr_scheduler_patience, # NEW: Read from config (or default)
-        verbose=True
-    )
-    print(f"Using ReduceLROnPlateau LR scheduler monitoring validation loss.")
+    if lr_scheduler_type == "reducelronplateau":
+        lr_scheduler_patience = cfg.training.get("lr_scheduler_patience", 3) 
+        print(f"  - ReduceLROnPlateau patience: {lr_scheduler_patience}")
+        lr_scheduler = ReduceLROnPlateau(
+            optimizer, 
+            mode='min',
+            factor=cfg.training.get("lr_factor", 0.1), # Use lr_factor or default
+            patience=lr_scheduler_patience,
+            verbose=True
+        )
+    elif lr_scheduler_type == "steplr":
+        lr_step_size = cfg.training.get("lr_step_size", 10) # Default step size 10 epochs
+        lr_gamma = cfg.training.get("lr_gamma", 0.1) # Default decay factor
+        print(f"  - StepLR step_size: {lr_step_size}, gamma: {lr_gamma}")
+        lr_scheduler = StepLR(
+            optimizer,
+            step_size=lr_step_size,
+            gamma=lr_gamma,
+            verbose=True # Prints message on LR change
+        )
+    else:
+        print(f"Warning: Unknown lr_scheduler_type '{cfg.training.lr_scheduler_type}'. Using no scheduler.")
+        lr_scheduler = None # Or potentially default to one type
     # ---
 
     # --- Determine base device type for autocast --- 
@@ -268,10 +281,17 @@ def main(cfg: DictConfig):
                         
             avg_val_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
             computed_val_metrics = val_metrics.compute()
-            print(f"Epoch {epoch} Validation Complete: Avg Loss={avg_val_loss:.4f}, Metrics={computed_val_metrics}")
+            # --- Calculate RMSE from MSE --- 
+            val_rmse = torch.sqrt(computed_val_metrics['MeanSquaredError']) if 'MeanSquaredError' in computed_val_metrics else -1.0
+            # ---
+            print(f"Epoch {epoch} Validation Complete: Avg Loss={avg_val_loss:.4f}, Metrics={computed_val_metrics}, RMSE={val_rmse:.4f}")
 
             # --- LR Scheduling Step --- 
-            lr_scheduler.step(avg_val_loss) # ReduceLROnPlateau steps based on validation loss
+            if lr_scheduler:
+                if isinstance(lr_scheduler, ReduceLROnPlateau):
+                    lr_scheduler.step(avg_val_loss) # Pass metric for ReduceLROnPlateau
+                else:
+                    lr_scheduler.step() # Other schedulers step without metric
 
             # --- Early Stopping & Best Model Check --- 
             if avg_val_loss < best_val_loss:
@@ -312,20 +332,38 @@ def main(cfg: DictConfig):
     model.eval() 
     test_predictions = []
     true_targets_list = []
+    # --- Initialize test metrics --- 
+    test_metrics = train_dataset_gen.validation_metrics.to(device=device)
+    test_metrics.reset()
+    # ---
 
     with torch.no_grad():
         for test_inputs, test_targets in tqdm(test_loader, desc="Testing"):
             test_inputs = test_inputs.to(device=device)
+            # Keep targets on CPU for list appending, move to device for metric calculation
+            targets_cpu = test_targets.cpu()
+            targets_device = test_targets.to(device=device)
+
             with torch.autocast(
                 device_type=autocast_device_type,
                 dtype=torch_dtype_map[cfg.training.amp_precision],
                 enabled=cfg.training.enable_mixed_precision,
             ):
                 outputs = model(test_inputs)
-                relevant_test_outputs = outputs[:, -pred_len:, :].cpu()
-                
-            test_predictions.append(relevant_test_outputs)
-            true_targets_list.append(test_targets.cpu())
+                relevant_test_outputs = outputs[:, -pred_len:, :]
+            
+            # --- Update test metrics --- 
+            # Ensure labels have the correct shape if needed before updating metrics
+            if relevant_test_outputs.shape != targets_device.shape:
+                 if relevant_test_outputs.shape[-1] == 1 and targets_device.ndim == relevant_test_outputs.ndim -1:
+                     targets_device = targets_device.unsqueeze(-1)
+                 # Add more robust shape checking/handling if necessary
+
+            test_metrics.update(relevant_test_outputs.detach(), targets_device)
+            # ---
+            
+            test_predictions.append(relevant_test_outputs.cpu())
+            true_targets_list.append(targets_cpu)
 
     # Combine predictions and targets
     if not test_predictions:
@@ -335,10 +373,18 @@ def main(cfg: DictConfig):
     test_predictions = torch.cat(test_predictions, dim=0)
     true_targets = torch.cat(true_targets_list, dim=0)
 
+    # --- Compute and Print Final Test Metrics --- 
+    final_test_metrics = test_metrics.compute()
+    # --- Calculate RMSE from MSE --- 
+    test_rmse = torch.sqrt(final_test_metrics['MeanSquaredError']) if 'MeanSquaredError' in final_test_metrics else -1.0
+    # ---
+    print(f"\n--- Test Results --- ")
+    print(f"  Test Metrics: {final_test_metrics}")
+    print(f"  Test RMSE: {test_rmse:.4f}")
+    print(f"--------------------")
+    # ---
+
     print("Test Inference Completed.")
-    print(f"Number of test predictions generated: {test_predictions.shape[0]}")
-    print(f"Test predictions shape: {test_predictions.shape}") 
-    print(f"True targets shape: {true_targets.shape}") 
 
     # --- Saving results to CSV --- 
     run_timestamp = os.path.basename(run_dir).replace("run_", "")
