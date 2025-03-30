@@ -54,10 +54,10 @@ model:
   # dropout: 0.0
 
 training:
-  seed: 42
+  seed: 2000
   batch_size: 100
-  max_epochs: 100                # Max epochs to train for
-  early_stopping_patience: 10    # Stop if val_loss doesn't improve for this many epochs
+  max_epochs: 2                # Max epochs to train for
+  early_stopping_patience: 20    # Stop if val_loss doesn't improve for this many epochs
 
   # --- Option 1: StepLR ---
   # Uncomment this block to use StepLR
@@ -72,7 +72,7 @@ training:
   lr_factor: 0.1                 # Multiply LR by this factor when reducing (ReduceLROnPlateau)
 
   # --- Common Training Parameters ---
-  lr: 0.0001                     # Initial learning rate
+  lr: 0.0005                     # Initial learning rate
   weight_decay: 0.01
   enable_mixed_precision: true
   device: "cuda:0"
