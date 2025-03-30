@@ -42,6 +42,7 @@ lib/
 lib64/
 parts/
 sdist/
+data/
 var/
 wheels/
 pip-wheel-metadata/
@@ -50,6 +51,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+requirements.txt
+training_runs/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
