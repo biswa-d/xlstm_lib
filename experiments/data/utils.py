@@ -2,6 +2,7 @@
 # Andreas Auer, Maximilian Beck
 from abc import abstractmethod
 from typing import Tuple, Any, Optional, Mapping
+from dataclasses import dataclass
 
 import hashlib
 import json
