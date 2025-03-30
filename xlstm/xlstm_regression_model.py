@@ -6,7 +6,8 @@ from typing import Sequence # Keep if using WeightDecayOptimGroupMixin
 import torch
 from torch import nn
 
-from .components.init import kaiming_uniform_init_, xavier_uniform_init_ # Import suitable initializers
+# Removed import of potentially non-existent custom initializers
+# from .components.init import kaiming_uniform_init_, xavier_uniform_init_ 
 from .utils import WeightDecayOptimGroupMixin # Optional: If fine-tuning weight decay
 from .xlstm_block_stack import xLSTMBlockStack, xLSTMBlockStackConfig
 
@@ -52,24 +53,18 @@ class xLSTMRegressionModel(nn.Module):
 
     def reset_parameters(self):
         """Initialize the weights of the model."""
-        # print(f"Initializing {self.__class__.__name__}...")
-        # Initialize input projection layer (example using Kaiming Uniform)
-        # kaiming_uniform_init_(self.input_proj.weight, nonlinearity='linear') # Use 'relu' if using ReLU activation
-        # if self.input_proj.bias is not None:
-        #     nn.init.zeros_(self.input_proj.bias)
-        # Simple initialization for now:
-        nn.init.xavier_uniform_(self.input_proj.weight)
+        # Initialize input projection layer using standard PyTorch init
+        nn.init.kaiming_uniform_(self.input_proj.weight, nonlinearity='linear') # Use 'relu' if using ReLU activation
         if self.input_proj.bias is not None:
-             nn.init.zeros_(self.input_proj.bias)
+            nn.init.zeros_(self.input_proj.bias)
         
         # Reset the stack's parameters (it handles its internal initialization)
         self.xlstm_block_stack.reset_parameters()
 
-        # Initialize output projection layer (example using Xavier Uniform)
-        xavier_uniform_init_(self.output_proj.weight)
+        # Initialize output projection layer using standard PyTorch init
+        nn.init.xavier_uniform_(self.output_proj.weight)
         if self.output_proj.bias is not None:
             nn.init.zeros_(self.output_proj.bias)
-        # print("Initialization complete.")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
