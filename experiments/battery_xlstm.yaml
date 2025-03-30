@@ -56,7 +56,7 @@ model:
 training:
   seed: 2000
   batch_size: 100
-  max_epochs: 2                # Max epochs to train for
+  max_epochs: 1                # Max epochs to train for
   early_stopping_patience: 20    # Stop if val_loss doesn't improve for this many epochs
 
   # --- Option 1: StepLR ---
