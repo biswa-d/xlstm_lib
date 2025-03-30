@@ -23,8 +23,8 @@ model:
   output_dim: 1     # Number of output features (Voltage)
 
   # --- Parameters inherited from xLSTMBlockStackConfig ---
-  embedding_dim: 128  # Dimension after input projection / internal dimension
-  num_blocks: 7       # Total number of xLSTM blocks
+  embedding_dim: 64  # Dimension after input projection / internal dimension
+  num_blocks: 2       # Total number of xLSTM blocks
   context_length: 256 # Should match dataset seq_len
 
   # Configure mLSTM blocks (used when slstm_at doesn't specify the block index)
@@ -32,15 +32,15 @@ model:
     mlstm:
       conv1d_kernel_size: 4
       qkv_proj_blocksize: 4
-      num_heads: 4        # Note: This num_heads is for mLSTM internal mechanism
+      num_heads: 2        # Note: This num_heads is for mLSTM internal mechanism
 
   # Configure sLSTM blocks (used when slstm_at *does* specify the block index)
   slstm_block:
     slstm:
       # backend: 'cuda' # or 'vanilla' - Use 'cuda' if available and compiled
       backend: 'vanilla' # Start with vanilla for broader compatibility
-      num_heads: 4          # Number of sLSTM heads
-      conv1d_kernel_size: 4
+      num_heads: 2          # Number of sLSTM heads
+      conv1d_kernel_size: 8
       bias_init: powerlaw_blockdependent # Or other init strategy
     feedforward: # Feedforward layer within the sLSTM block
       proj_factor: 1.3
