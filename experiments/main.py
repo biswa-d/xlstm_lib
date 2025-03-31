@@ -29,6 +29,18 @@ from tqdm import tqdm
 from xlstm.xlstm_regression_model import xLSTMRegressionModel, xLSTMRegressionModelConfig
 # ---
 
+# --- Add import for torch.multiprocessing ---
+import torch.multiprocessing
+# ---
+
+# --- Set multiprocessing strategy ---
+# Needs to be done *before* other torch imports potentially trigger multiprocessing context initialization
+try:
+    torch.multiprocessing.set_sharing_strategy('file_system')
+except RuntimeError:
+    print("Warning: Could not set multiprocessing sharing strategy (likely already set or not applicable).")
+# ---
+
 dataset_registry: dict[str, Type[DataGen]] = {
     "form_language": FormLangDatasetGenerator,
     "battery_dataset_generator": BatteryDatasetGenerator, # Updated key
@@ -109,11 +121,17 @@ def main(cfg: DictConfig):
     )
     print("Testing dataset loaded.")
 
+    # --- Conditional num_workers for test_loader ---
+    test_num_workers = 0 if cfg.training.get("checkpoint_path") else num_workers
+    if cfg.training.get("checkpoint_path"):
+        print(f"Checkpoint path provided. Forcing num_workers=0 for test loader to avoid potential errors.")
+    # ---
     test_loader = DataLoader(
         test_dataset, 
         batch_size=cfg.training.batch_size, 
         shuffle=False, 
-        num_workers=num_workers
+        # Use conditional num_workers
+        num_workers=test_num_workers
     )
     print("Testing DataLoader created.")
     # ---
@@ -219,135 +237,168 @@ def main(cfg: DictConfig):
     print(f"Early stopping patience: {patience} epochs.")
     # ---
 
-    # --- Epoch-based Training loop --- 
-    print(f"Starting training for max {max_epochs} epochs...")
-    for epoch in range(1, max_epochs + 1):
-        print(f"\n--- Epoch {epoch}/{max_epochs} --- ")
-        
-        # --- Training Phase --- 
-        model.train()
-        train_loss_epoch = 0.0
-        train_metrics.reset()
-        train_iterator = tqdm(train_loader, desc=f"Epoch {epoch} Training")
-        
-        for batch_idx, (inputs, labels) in enumerate(train_iterator):
-            inputs = inputs.to(device=device)
-            labels = labels.to(device=device)
+    # --- Conditionally Skip Training/Validation if Checkpoint Path is Provided ---
+    if not cfg.training.get("checkpoint_path"):
+        print("No checkpoint path specified, proceeding with training...")
+        # --- Epoch-based Training loop --- 
+        print(f"Starting training for max {max_epochs} epochs...")
+        for epoch in range(1, max_epochs + 1):
+            print(f"\n--- Epoch {epoch}/{max_epochs} --- ")
+            
+            # --- Training Phase --- 
+            model.train()
+            train_loss_epoch = 0.0
+            train_metrics.reset()
+            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch} Training")
+            
+            for batch_idx, (inputs, labels) in enumerate(train_iterator):
+                inputs = inputs.to(device=device)
+                labels = labels.to(device=device)
 
-            optimizer.zero_grad()
-            with torch.autocast(
-                device_type=autocast_device_type,
-                dtype=torch_dtype_map[cfg.training.amp_precision],
-                enabled=cfg.training.enable_mixed_precision,
-            ):
-                outputs = model(inputs)
-                relevant_outputs = outputs[:, -pred_len:, :] 
+                optimizer.zero_grad()
+                with torch.autocast(
+                    device_type=autocast_device_type,
+                    dtype=torch_dtype_map[cfg.training.amp_precision],
+                    enabled=cfg.training.enable_mixed_precision,
+                ):
+                    outputs = model(inputs)
+                    relevant_outputs = outputs[:, -pred_len:, :] 
+                    
+                    if relevant_outputs.shape != labels.shape:
+                         # Handle potential shape mismatch (e.g., unsqueeze labels)
+                         if relevant_outputs.shape[-1] == 1 and labels.ndim == relevant_outputs.ndim -1:
+                             labels = labels.unsqueeze(-1)
+                         else:
+                              raise RuntimeError(f"Shape mismatch: Output slice {relevant_outputs.shape}, Labels {labels.shape}")
+
+                    loss = nn.functional.mse_loss(relevant_outputs, labels)
                 
+                if torch.isnan(loss):
+                     print(f"WARNING: Loss is NaN at Epoch {epoch}, Batch {batch_idx}. Stopping training.")
+                     break # Stop epoch if loss is NaN
+                
+                loss.backward()
+                # Optional: Gradient clipping can be added here if needed
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                
+                train_loss_epoch += loss.item()
+                # --- Ensure labels have correct shape before metric update ---
                 if relevant_outputs.shape != labels.shape:
-                     # Handle potential shape mismatch (e.g., unsqueeze labels)
                      if relevant_outputs.shape[-1] == 1 and labels.ndim == relevant_outputs.ndim -1:
                          labels = labels.unsqueeze(-1)
-                     else:
-                          raise RuntimeError(f"Shape mismatch: Output slice {relevant_outputs.shape}, Labels {labels.shape}")
+                     # Add more robust shape checking/handling if necessary
+                # ---
+                train_metrics.update(relevant_outputs.detach(), labels)
+                train_iterator.set_postfix(loss=loss.item()) # Show loss for current batch
 
-                loss = nn.functional.mse_loss(relevant_outputs, labels)
-            
             if torch.isnan(loss):
-                 print(f"WARNING: Loss is NaN at Epoch {epoch}, Batch {batch_idx}. Stopping training.")
-                 break # Stop epoch if loss is NaN
+                 break # Stop training completely if NaN occurred
+                 
+            avg_train_loss = train_loss_epoch / len(train_loader)
+            computed_train_metrics = train_metrics.compute()
+            print(f"Epoch {epoch} Training Complete: Avg Loss={avg_train_loss:.4f}, Metrics={computed_train_metrics}")
             
-            loss.backward()
-            # Optional: Gradient clipping can be added here if needed
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            
-            train_loss_epoch += loss.item()
-            train_metrics.update(relevant_outputs.detach(), labels)
-            train_iterator.set_postfix(loss=loss.item()) # Show loss for current batch
+            # --- Validation Phase --- 
+            if val_loader:
+                model.eval()
+                val_loss = 0.0
+                val_metrics.reset()
+                val_iterator = tqdm(val_loader, desc=f"Epoch {epoch} Validation")
+                
+                with torch.no_grad():
+                    for val_inputs, val_labels in val_iterator:
+                        val_inputs = val_inputs.to(device=device)
+                        val_labels = val_labels.to(device=device)
+                        with torch.autocast(
+                            device_type=autocast_device_type,
+                            dtype=torch_dtype_map[cfg.training.amp_precision],
+                            enabled=cfg.training.enable_mixed_precision,
+                        ):
+                            val_outputs = model(val_inputs)
+                            relevant_val_outputs = val_outputs[:, -pred_len:, :]
+                            
+                            if relevant_val_outputs.shape != val_labels.shape:
+                                 if relevant_val_outputs.shape[-1] == 1 and val_labels.ndim == relevant_val_outputs.ndim -1:
+                                     val_labels = val_labels.unsqueeze(-1)
+                                 else:
+                                      raise RuntimeError(f"Val Shape mismatch: Output slice {relevant_val_outputs.shape}, Labels {val_labels.shape}")
+                                 
+                            v_loss = nn.functional.mse_loss(relevant_val_outputs, val_labels)
+                            val_loss += v_loss.item()
+                            val_metrics.update(relevant_val_outputs, val_labels)
+                            val_iterator.set_postfix(loss=v_loss.item())
+                            
+                avg_val_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
+                computed_val_metrics = val_metrics.compute()
+                # --- Calculate RMSE from MSE --- 
+                val_rmse = torch.sqrt(computed_val_metrics['MeanSquaredError']) if 'MeanSquaredError' in computed_val_metrics else -1.0
+                # ---
+                print(f"Epoch {epoch} Validation Complete: Avg Loss={avg_val_loss:.4f}, Metrics={computed_val_metrics}, RMSE={val_rmse:.4f}")
 
-        if torch.isnan(loss):
-             break # Stop training completely if NaN occurred
-             
-        avg_train_loss = train_loss_epoch / len(train_loader)
-        computed_train_metrics = train_metrics.compute()
-        print(f"Epoch {epoch} Training Complete: Avg Loss={avg_train_loss:.4f}, Metrics={computed_train_metrics}")
-        
-        # --- Validation Phase --- 
-        if val_loader:
-            model.eval()
-            val_loss = 0.0
-            val_metrics.reset()
-            val_iterator = tqdm(val_loader, desc=f"Epoch {epoch} Validation")
-            
-            with torch.no_grad():
-                for val_inputs, val_labels in val_iterator:
-                    val_inputs = val_inputs.to(device=device)
-                    val_labels = val_labels.to(device=device)
-                    with torch.autocast(
-                        device_type=autocast_device_type,
-                        dtype=torch_dtype_map[cfg.training.amp_precision],
-                        enabled=cfg.training.enable_mixed_precision,
-                    ):
-                        val_outputs = model(val_inputs)
-                        relevant_val_outputs = val_outputs[:, -pred_len:, :]
-                        
-                        if relevant_val_outputs.shape != val_labels.shape:
-                             if relevant_val_outputs.shape[-1] == 1 and val_labels.ndim == relevant_val_outputs.ndim -1:
-                                 val_labels = val_labels.unsqueeze(-1)
-                             else:
-                                  raise RuntimeError(f"Val Shape mismatch: Output slice {relevant_val_outputs.shape}, Labels {val_labels.shape}")
-                             
-                        v_loss = nn.functional.mse_loss(relevant_val_outputs, val_labels)
-                        val_loss += v_loss.item()
-                        val_metrics.update(relevant_val_outputs, val_labels)
-                        val_iterator.set_postfix(loss=v_loss.item())
-                        
-            avg_val_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
-            computed_val_metrics = val_metrics.compute()
-            # --- Calculate RMSE from MSE --- 
-            val_rmse = torch.sqrt(computed_val_metrics['MeanSquaredError']) if 'MeanSquaredError' in computed_val_metrics else -1.0
-            # ---
-            print(f"Epoch {epoch} Validation Complete: Avg Loss={avg_val_loss:.4f}, Metrics={computed_val_metrics}, RMSE={val_rmse:.4f}")
+                # --- LR Scheduling Step --- 
+                if lr_scheduler:
+                    if isinstance(lr_scheduler, ReduceLROnPlateau):
+                        lr_scheduler.step(avg_val_loss) # Pass metric for ReduceLROnPlateau
+                    else:
+                        lr_scheduler.step() # Other schedulers step without metric
 
-            # --- LR Scheduling Step --- 
-            if lr_scheduler:
-                if isinstance(lr_scheduler, ReduceLROnPlateau):
-                    lr_scheduler.step(avg_val_loss) # Pass metric for ReduceLROnPlateau
+                # --- Early Stopping & Best Model Check --- 
+                if avg_val_loss < best_val_loss:
+                    print(f"Validation loss improved ({best_val_loss:.4f} --> {avg_val_loss:.4f}). Saving model...")
+                    best_val_loss = avg_val_loss
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': best_val_loss,
+                    }, best_ckpt_path)
+                    epochs_no_improve = 0 # Reset patience counter
                 else:
-                    lr_scheduler.step() # Other schedulers step without metric
-
-            # --- Early Stopping & Best Model Check --- 
-            if avg_val_loss < best_val_loss:
-                print(f"Validation loss improved ({best_val_loss:.4f} --> {avg_val_loss:.4f}). Saving model...")
-                best_val_loss = avg_val_loss
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': best_val_loss,
-                }, best_ckpt_path)
-                epochs_no_improve = 0 # Reset patience counter
+                    epochs_no_improve += 1
+                    print(f"Validation loss did not improve from {best_val_loss:.4f}. Patience: {epochs_no_improve}/{patience}")
+                    if epochs_no_improve >= patience:
+                        print(f"Early stopping triggered after {patience} epochs with no improvement.")
+                        break # Stop training
             else:
-                epochs_no_improve += 1
-                print(f"Validation loss did not improve from {best_val_loss:.4f}. Patience: {epochs_no_improve}/{patience}")
-                if epochs_no_improve >= patience:
-                    print(f"Early stopping triggered after {patience} epochs with no improvement.")
-                    break # Stop training
+                 print("Skipping validation, LR scheduling, and early stopping due to no validation loader.")
+                 # If no validation, maybe save the model from the last epoch?
+                 # Or rely solely on max_epochs
+
+        print("Training loop finished.")
+    else:
+        print(f"Checkpoint path {cfg.training.checkpoint_path} specified, skipping training loop.")
+    # --- End of Conditional Training Block ---
+
+    # --- Load best checkpoint for testing ---
+    # --- Modified Checkpoint Loading Logic ---
+    if cfg.training.get("checkpoint_path"): # Check if a specific checkpoint path is provided
+        load_path = cfg.training.checkpoint_path
+        print(f"\nLoading model checkpoint directly from specified path: {load_path}...")
+        if not os.path.exists(load_path):
+            print(f"Error: Specified checkpoint path does not exist: {load_path}")
+            return # Or raise an error
+        checkpoint = torch.load(load_path, map_location=device)
+        # --- Load only model state_dict ---
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print("Model state loaded successfully from specified checkpoint.")
+            # Optionally load epoch/loss info if needed for logging, but not required for inference
+            # loaded_epoch = checkpoint.get('epoch', 'N/A')
+            # loaded_loss = checkpoint.get('loss', float('inf'))
+            # print(f"  Checkpoint Epoch: {loaded_epoch}, Loss: {loaded_loss:.4f}")
         else:
-             print("Skipping validation, LR scheduling, and early stopping due to no validation loader.")
-             # If no validation, maybe save the model from the last epoch?
-             # Or rely solely on max_epochs
-
-    print("Training loop finished.")
-
-    # --- Load best checkpoint for testing --- 
-    if os.path.exists(best_ckpt_path):
-        print(f"\nLoading best model checkpoint from {best_ckpt_path} (Epoch {torch.load(best_ckpt_path)['epoch']}, Val Loss: {best_val_loss:.4f})...")
+             print(f"Error: 'model_state_dict' not found in the specified checkpoint file: {load_path}")
+             return # Or raise an error
+    elif os.path.exists(best_ckpt_path): # Otherwise, load the best checkpoint saved during training (if it exists)
+        print(f"\nLoading best model checkpoint saved during training from {best_ckpt_path}...")
         checkpoint = torch.load(best_ckpt_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-        print("Best checkpoint loaded successfully.")
+        loaded_epoch = checkpoint.get('epoch', 'N/A')
+        loaded_loss = checkpoint.get('loss', float('inf'))
+        print(f"Best checkpoint loaded successfully (Epoch {loaded_epoch}, Val Loss: {loaded_loss:.4f}).")
     else:
-        print("\nWarning: No best checkpoint was saved during training. Testing with final model state.")
+        print("\nWarning: No checkpoint specified and no best checkpoint was saved during training. Testing with initialized model state (likely untrained).")
     # ---
 
     # --- Testing Phase --- 
@@ -459,12 +510,21 @@ if __name__ == "__main__":
 
     parser = ArgumentParser()
     parser.add_argument("--config", default="experiments/battery_xlstm.yaml")
+    # --- Add checkpoint_path argument ---
+    parser.add_argument("--checkpoint_path", default=None, type=str,
+                        help="Path to a specific model checkpoint file to load for testing (skips training).")
+    # ---
     args = parser.parse_args()
 
     try:
         with open(args.config, "r", encoding="utf8") as fp:
             config_yaml = fp.read()
         cfg = OmegaConf.create(config_yaml)
+        # --- Merge checkpoint_path arg into config ---
+        if args.checkpoint_path:
+             # Add it under training config for access within main function
+             cfg.training.checkpoint_path = args.checkpoint_path
+        # ---
         OmegaConf.resolve(cfg)
     except FileNotFoundError:
         print(f"ERROR: Config file not found at {args.config}")
